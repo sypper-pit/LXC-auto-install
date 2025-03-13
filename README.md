@@ -1,6 +1,8 @@
+# !!! Attention: the script works stably only with Ubuntu 22.04 and 24.04
+
 ## Instructions for Using the LXC/LXD Container and Virtual Machine Creation Script
 
-### Installing LXD/LXC on Ubuntu 22.04
+### Installing LXD/LXC on Ubuntu 22.04(24.04)
 
 Before using the script, you need to install LXD/LXC on your Ubuntu 22.04(24.04) system. Follow these steps:
 
@@ -77,10 +79,11 @@ This script automates the process of creating LXC containers or virtual machines
 This script provides a convenient way to create and configure LXC containers and virtual machines with flexible parameters, automating many manual steps of the process.
 
 ____
+# !!! Внимание стабильно скрипт работает только с Ubuntu 22.04 и 24.04
 
 ## Инструкция по использованию скрипта для создания LXC/LXD контейнеров и виртуальных машин
 
-### Установка LXD/LXC на Ubuntu 22.04
+### Установка LXD/LXC на Ubuntu 22.04(24.04)
 
 Перед использованием скрипта необходимо установить LXD/LXC на вашу систему Ubuntu 22.04(24.04). Выполните следующие шаги:
 
