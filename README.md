@@ -1,5 +1,12 @@
 # !!! Attention: the script works stably only with Ubuntu 22.04 and 24.04
 
+# lxc version
+
+```
+Client version: 5.21.3 LTS
+Server version: 5.21.3 LTS
+```
+
 ## Instructions for Using the LXC/LXD Container and Virtual Machine Creation Script
 
 ### Installing LXD/LXC on Ubuntu 22.04(24.04)
@@ -80,6 +87,13 @@ This script provides a convenient way to create and configure LXC containers and
 
 ____
 # !!! Внимание стабильно скрипт работает только с Ubuntu 22.04 и 24.04
+
+# lxc version
+
+```
+Client version: 5.21.3 LTS
+Server version: 5.21.3 LTS
+```
 
 ## Инструкция по использованию скрипта для создания LXC/LXD контейнеров и виртуальных машин
 
