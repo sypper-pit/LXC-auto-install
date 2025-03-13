@@ -2,7 +2,7 @@
 
 ### Installing LXD/LXC on Ubuntu 22.04
 
-Before using the script, you need to install LXD/LXC on your Ubuntu 22.04 system. Follow these steps:
+Before using the script, you need to install LXD/LXC on your Ubuntu 22.04(24.04) system. Follow these steps:
 
 1. Update your system:
    ```
@@ -82,7 +82,7 @@ ____
 
 ### Установка LXD/LXC на Ubuntu 22.04
 
-Перед использованием скрипта необходимо установить LXD/LXC на вашу систему Ubuntu 22.04. Выполните следующие шаги:
+Перед использованием скрипта необходимо установить LXD/LXC на вашу систему Ubuntu 22.04(24.04). Выполните следующие шаги:
 
 1. Обновите систему:
    ```
