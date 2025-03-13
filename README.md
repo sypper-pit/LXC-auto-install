@@ -1,4 +1,4 @@
-# !!! Attention: the script works stably only with Ubuntu 22.04 and 24.04
+# !!! Attention: the script works stably only with Ubuntu 22.04 and 24.04 and Ubuntu inside VM/Container
 
 # lxc version
 
@@ -86,7 +86,7 @@ This script automates the process of creating LXC containers or virtual machines
 This script provides a convenient way to create and configure LXC containers and virtual machines with flexible parameters, automating many manual steps of the process.
 
 ____
-# !!! Внимание стабильно скрипт работает только с Ubuntu 22.04 и 24.04
+# !!! Внимание стабильно скрипт работает только с Ubuntu 22.04 и 24.04 , а также внутри VM и контейнерами Ubuntu
 
 # lxc version
 
