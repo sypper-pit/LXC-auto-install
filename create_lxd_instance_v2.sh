@@ -7,6 +7,46 @@ log() {
     [ "$LOGS" -eq 1 ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> install.log
 }
 
+# Функция для отображения прогресса
+progress() {
+    local message=$1
+    local delay=0.1
+    local spinner="/-\|"
+
+    echo -n "$message "
+    for ((i=0; ; i++)); do
+        # Выводим текущий символ спиннера, перезаписываем его поверх
+        printf "\b${spinner:i%4}"
+        sleep "$delay"
+        # Для выхода, когда команда завершится, нужно вызвать остановку
+        # Но здесь используется как индикатор - до вызова следующей операции
+    done
+}
+
+# Запуск команды с индикатором спиннера
+run_with_spinner() {
+    local message=$1
+    local command=$2
+
+    # Запускаем команду в фоне
+    eval "$command" &
+    local pid=$!
+    # Показываем спиннер, пока команда выполняется
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\b|"
+        sleep 0.1
+        printf "\b/"
+        sleep 0.1
+        printf "\b-"
+        sleep 0.1
+        printf "\b\\"
+        sleep 0.1
+    done
+    wait "$pid"
+    echo -e "\b Done."
+    log "$message - done"
+}
+
 [ "$LOGS" -eq 1 ] && exec > >(tee -a install.log) 2>&1
 
 log "Script started"
@@ -37,40 +77,52 @@ validate_number() {
 command -v dialog >/dev/null || { apt-get update && apt-get install -y dialog; }
 command -v jq >/dev/null || { apt-get update && apt-get install -y jq; }
 
-repo_choice=$(dialog --menu "Select image source:" 15 50 4 \
-    1 "Official Ubuntu (cloud images)" \
-    2 "LinuxContainers.org (all images)" 2>&1 >/dev/tty)
-clear
+# Выбор репозитория
+run_with_spinner "Selecting image source" "dialog --menu \"Select image source:\" 15 50 4 \
+    1 \"Official Ubuntu (cloud images)\" \
+    2 \"LinuxContainers.org (all images)\" 2>&1 >/dev/tty"
 
-case $repo_choice in
-    1) repo="ubuntu:" ;;
-    2) repo="images:" ;;
-    *) print_error "Invalid selection" ;;
+clear
+case $? in
+    1|255) print_error "Operation cancelled" ;;
+    0)
+        # Обработка выбора
+        repo_choice=$(dialog --menu "Select image source:" 15 50 4 \
+            1 "Official Ubuntu (cloud images)" \
+            2 "LinuxContainers.org (all images)" 2>&1 >/dev/tty)
+        clear
+        case $repo_choice in
+            1) repo="ubuntu:" ;;
+            2) repo="images:" ;;
+            *) print_error "Invalid selection" ;;
+        esac
+        ;;
 esac
 
+# Выбор типа
+run_with_spinner "Choosing container or VM" "dialog --menu \"Create container or VM?\" 12 40 2 \
+    container \"Container\" \
+    virtual-machine \"Virtual Machine\" 2>&1 >/dev/tty"
+clear
 instance_type=$(dialog --menu "Create container or VM?" 12 40 2 \
     container "Container" \
     virtual-machine "Virtual Machine" 2>&1 >/dev/tty)
 clear
-
 vm_flag=""
 [ "$instance_type" == "virtual-machine" ] && vm_flag="--vm"
 
+# Получаем список образов
 log "Fetching local images for selection..."
 choose_local_image() {
-    local instance_type=$1
     local images=()
     local menu_options=()
     local selected_alias os_choice selected_image os_alias
 
-    # Получаем список локальных образов
     mapfile -t images < <(lxc image list --format csv | grep ",${instance_type}," || true)
-
     if [ ${#images[@]} -eq 0 ]; then
         dialog --msgbox "No local images found for type: $instance_type" 6 50
         return 1
     fi
-
     for i in "${!images[@]}"; do
         alias=$(echo "${images[$i]}" | awk -F',' '{print $2}')
         desc=$(echo "${images[$i]}" | awk -F',' '{print $4}')
@@ -79,36 +131,30 @@ choose_local_image() {
     done
 
     while true; do
-        # Меню с кнопками OK / Cancel / Fetch image
+        # Меню выбора с кнопками
         os_choice=$(dialog --menu "Select OS version (Press F to fetch images):" 25 80 15 "${menu_options[@]}" 2>&1 >/dev/tty)
         ret=$?
         if [ $ret -eq 1 ]; then
             # Cancel
             return 1
         elif [ $ret -eq 0 ]; then
-            # OK
             if [[ "$os_choice" =~ ^[0-9]+$ ]] && [ "$os_choice" -ge 1 ] && [ "$os_choice" -le "${#images[@]}" ]; then
                 selected_image=${images[$((os_choice-1))]}
                 os_alias=$(echo "$selected_image" | awk -F',' '{print $2}')
                 echo "$os_alias"
                 return 0
-            else
-                dialog --msgbox "Invalid choice" 5 30
             fi
         fi
-
-        # Обработка нажатия 'F' для fetch
-        input=$(dialog --inputbox "Press 'f' to fetch images or Enter to cancel" 6 50 2>&1 >/dev/tty)
+        # Обработка нажатия 'f'
+        input=$(dialog --inputbox "Press 'f' to fetch images or Enter to skip" 6 50 2>&1 >/dev/tty)
         if [[ "$input" == "f" ]]; then
+            # Обновляем список
             return 2
-        else
-            return 1
         fi
     done
 }
 
 while true; do
-    # Выбираем образ из локальных
     result=$(choose_local_image "$instance_type")
     status=$?
     if [ $status -eq 0 ]; then
@@ -122,7 +168,7 @@ while true; do
         else
             lxc image list ubuntu: --format csv | grep -i "$instance_type" > /tmp/lxc_images.csv
         fi
-        # Повторный вызов выбора
+        # повторное вызов
     else
         print_error "Image selection cancelled"
     fi
@@ -130,17 +176,14 @@ done
 
 log "Selected image alias: $os_alias"
 
+# Ввод данных
 container_name=$(dialog --inputbox "Instance name:" 8 40 2>&1 >/dev/tty)
 container_name=$(echo "$container_name" | tr -cd 'a-zA-Z0-9-')
-
 disk_size=$(dialog --inputbox "Disk size (GB):" 8 40 10 2>&1 >/dev/tty); validate_number "$disk_size"
 ram=$(dialog --inputbox "RAM (GB):" 8 40 2>&1 >/dev/tty); validate_number "$ram"; ram_mb=$((ram*1024))
 cpu=$(dialog --inputbox "CPU cores:" 8 40 2>&1 >/dev/tty); validate_number "$cpu"
 
-image_path="$(pwd)/${container_name}.img"
-[[ ! -e "$image_path" ]] || print_error "Image exists!"
-
-# Вопрос о планируемых snapshot
+# Планирование snapshot'ов
 snapshot_plan=$(dialog --menu "Are snapshots planned?" 12 50 5 \
     1 "No snapshots (100%)" \
     2 "+50%" \
@@ -160,62 +203,56 @@ esac
 
 disk_size_final=$(awk "BEGIN {printf \"%d\", $disk_size * $multiplier}")
 
+# Создание образа
 print_step "Creating disk image"
 truncate -s "${disk_size_final}G" "$image_path"
 mkfs.btrfs -f "$image_path"
 
+# Монтируем
 mount_point="/mnt/lxc-pools/${container_name}"
 mkdir -p "$mount_point"
-
+# добавим флаг
 print_step "Adding mount to /etc/fstab"
 fstab_entry="$(realpath "${image_path}") ${mount_point} btrfs loop,discard,compress=zstd 0 0"
 grep -qxF "${fstab_entry}" /etc/fstab || echo "${fstab_entry}" >> /etc/fstab
 mount -a || print_error "Mounting via fstab failed"
 
-# Создаем pool
+# Создаем lxc storage
 storage_pool="${container_name}-pool"
 print_step "Creating storage pool"
 lxc storage create "$storage_pool" btrfs source="$mount_point"
 
+# Создаем и запускаем контейнер/виртуальную машину
 print_step "Launching instance"
 lxc init "${repo}${os_alias}" "$container_name" $vm_flag --storage="$storage_pool" --config limits.memory="${ram_mb}MB" --config limits.cpu="$cpu"
-
 print_step "Starting instance"
 lxc start "$container_name"
 
-# Расширяем диск уровня VM, если необходимо
+# Расширяем диск внутри VM
 if [ "$instance_type" == "virtual-machine" ]; then
     print_step "Expanding VM disk"
-
-    # Ждем загрузки VM
-    print_step "Wait 30 seconds"
     sleep 30
-
-    # Расширяем диск
+    # расширение уровня LXD
     lxc config device set "$container_name" root size="${disk_size}GiB"
-    # Перезагружаем VM
+    # перезагружать VM
     print_step "Restarting VM to apply disk changes"
     lxc restart "$container_name"
     sleep 30
-
-    # Расширяем внутри VM
-    print_step "Resizing partition and filesystem inside VM"
+    # расширение внутри VM
+    print_step "Resizing partition & filesystem inside VM"
     lxc exec "$container_name" -- bash -c '
         set -e
-        echo "Expanding partition..."
         growpart /dev/sda 1
-        echo "Expanding filesystem..."
         if [ -f /etc/redhat-release ]; then
             xfs_growfs /
         else
             resize2fs /dev/sda1
         fi
-        echo "Disk expansion completed."
         df -h /
     '
 fi
 
-echo -e "\n${GREEN}[Success]${NC} Instance '$container_name' created:"
+echo -e "${GREEN}[Success]${NC} Instance '$container_name' created:"
 echo "- OS: $os_alias"
 echo "- Type: ${instance_type^}"
 echo "- Disk: ${disk_size}G"
@@ -223,8 +260,7 @@ echo "- RAM: ${ram}GB"
 echo "- CPU: ${cpu} cores"
 
 log "Instance '$container_name' created successfully"
-
-log "Collecting additional logs"
+log "Collecting additional logs..."
 {
 lxc info "$container_name"
 lxc config show "$container_name"
