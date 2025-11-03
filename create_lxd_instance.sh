@@ -4,13 +4,20 @@ set -eo pipefail
 LOGS=1
 TIMEOUT=30  # Таймаут для команд (секунды)
 
+# НОВОЕ: Определяем рабочую директорию (где запущен скрипт)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK_DIR="${SCRIPT_DIR}/lxc-instances"  # Папка для хранения образов
+
+mkdir -p "$WORK_DIR"
+
 log() {
     [ "$LOGS" -eq 1 ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> install.log
 }
 
 [ "$LOGS" -eq 1 ] && exec > >(tee -a install.log) 2>&1
 
-log "Script started"
+log "Script started from: $SCRIPT_DIR"
+log "Work directory: $WORK_DIR"
 
 GREEN="\033[0;32m"
 RED="\033[0;31m"
@@ -263,11 +270,13 @@ esac
 
 disk_size_final=$(awk "BEGIN {printf \"%d\", $disk_size * $multiplier}")
 
-# Определение переменной image_path
-image_path="/var/lib/lxc-images/${container_name}.img"
-mkdir -p /var/lib/lxc-images
+# ИСПРАВЛЕНО: Определение переменных путей относительно рабочей директории
+image_path="${WORK_DIR}/${container_name}.img"
+mount_point="${WORK_DIR}/${container_name}"
+mkdir -p "$WORK_DIR"
 
 log "Image path: $image_path"
+log "Mount point: $mount_point"
 log "Disk size: ${disk_size}G, Final with buffer: ${disk_size_final}G (multiplier: $multiplier)"
 
 # Создание образа диска
@@ -286,7 +295,6 @@ if ! mkfs.btrfs -f "$image_path" >/dev/null 2>&1; then
 fi
 
 # Монтируем
-mount_point="/mnt/lxc-pools/${container_name}"
 mkdir -p "$mount_point"
 
 print_step "Adding mount to /etc/fstab"
@@ -296,6 +304,8 @@ grep -qxF "${fstab_entry}" /etc/fstab || echo "${fstab_entry}" >> /etc/fstab
 if ! mount -a; then
     print_error "Mounting via fstab failed"
 fi
+
+log "Filesystem mounted successfully"
 
 # Создаем lxc storage
 storage_pool="${container_name}-pool"
