@@ -64,7 +64,7 @@ print_step() {
 
 print_error() {
     echo -e "${RED}[Error]${NC} $1"
-    log "[Error]$1"
+    log "[Error] $1"
     exit 1
 }
 
@@ -77,39 +77,40 @@ validate_number() {
 command -v dialog >/dev/null || { apt-get update && apt-get install -y dialog; }
 command -v jq >/dev/null || { apt-get update && apt-get install -y jq; }
 
-# Выбор репозитория
-run_with_spinner "Selecting image source" "dialog --menu \"Select image source:\" 15 50 4 \
-    1 \"Official Ubuntu (cloud images)\" \
-    2 \"LinuxContainers.org (all images)\" 2>&1 >/dev/tty"
-
+# Выбор репозитория (ИСПРАВЛЕНО: убрана run_with_spinner для интерактивной команды)
+repo_choice=$(dialog --menu "Select image source:" 15 50 4 \
+    1 "Official Ubuntu (cloud images)" \
+    2 "LinuxContainers.org (all images)" 2>&1 >/dev/tty)
+ret=$?
 clear
-case $? in
-    1|255) print_error "Operation cancelled" ;;
-    0)
-        # Обработка выбора
-        repo_choice=$(dialog --menu "Select image source:" 15 50 4 \
-            1 "Official Ubuntu (cloud images)" \
-            2 "LinuxContainers.org (all images)" 2>&1 >/dev/tty)
-        clear
-        case $repo_choice in
-            1) repo="ubuntu:" ;;
-            2) repo="images:" ;;
-            *) print_error "Invalid selection" ;;
-        esac
-        ;;
+
+if [ $ret -eq 1 ] || [ $ret -eq 255 ]; then
+    print_error "Operation cancelled"
+fi
+
+case $repo_choice in
+    1) repo="ubuntu:" ;;
+    2) repo="images:" ;;
+    *) print_error "Invalid selection" ;;
 esac
 
-# Выбор типа
-run_with_spinner "Choosing container or VM" "dialog --menu \"Create container or VM?\" 12 40 2 \
-    container \"Container\" \
-    virtual-machine \"Virtual Machine\" 2>&1 >/dev/tty"
-clear
+log "Selected repository: $repo"
+
+# Выбор типа (ИСПРАВЛЕНО: убрана run_with_spinner для интерактивной команды)
 instance_type=$(dialog --menu "Create container or VM?" 12 40 2 \
     container "Container" \
     virtual-machine "Virtual Machine" 2>&1 >/dev/tty)
+ret=$?
 clear
+
+if [ $ret -eq 1 ] || [ $ret -eq 255 ]; then
+    print_error "Operation cancelled"
+fi
+
 vm_flag=""
 [ "$instance_type" == "virtual-machine" ] && vm_flag="--vm"
+
+log "Selected instance type: $instance_type"
 
 # Получаем список образов
 log "Fetching local images for selection..."
@@ -121,8 +122,10 @@ choose_local_image() {
     mapfile -t images < <(lxc image list --format csv | grep ",${instance_type}," || true)
     if [ ${#images[@]} -eq 0 ]; then
         dialog --msgbox "No local images found for type: $instance_type" 6 50
+        clear
         return 1
     fi
+    
     for i in "${!images[@]}"; do
         alias=$(echo "${images[$i]}" | awk -F',' '{print $2}')
         desc=$(echo "${images[$i]}" | awk -F',' '{print $4}')
@@ -131,26 +134,30 @@ choose_local_image() {
     done
 
     while true; do
-        # Меню выбора с кнопками
-        os_choice=$(dialog --menu "Select OS version (Press F to fetch images):" 25 80 15 "${menu_options[@]}" 2>&1 >/dev/tty)
+        # Меню выбора с дополнительной кнопкой для загрузки образов (ИСПРАВЛЕНО: логика выбора)
+        os_choice=$(dialog --extra-button --extra-label "Fetch" \
+            --menu "Select OS version:" 25 80 15 "${menu_options[@]}" 2>&1 >/dev/tty)
         ret=$?
-        if [ $ret -eq 1 ]; then
-            # Cancel
-            return 1
-        elif [ $ret -eq 0 ]; then
-            if [[ "$os_choice" =~ ^[0-9]+$ ]] && [ "$os_choice" -ge 1 ] && [ "$os_choice" -le "${#images[@]}" ]; then
-                selected_image=${images[$((os_choice-1))]}
-                os_alias=$(echo "$selected_image" | awk -F',' '{print $2}')
-                echo "$os_alias"
-                return 0
-            fi
-        fi
-        # Обработка нажатия 'f'
-        input=$(dialog --inputbox "Press 'f' to fetch images or Enter to skip" 6 50 2>&1 >/dev/tty)
-        if [[ "$input" == "f" ]]; then
-            # Обновляем список
-            return 2
-        fi
+        
+        case $ret in
+            0) # OK button
+                if [[ "$os_choice" =~ ^[0-9]+$ ]] && [ "$os_choice" -ge 1 ] && [ "$os_choice" -le "${#images[@]}" ]; then
+                    selected_image=${images[$((os_choice-1))]}
+                    os_alias=$(echo "$selected_image" | awk -F',' '{print $2}')
+                    echo "$os_alias"
+                    clear
+                    return 0
+                fi
+                ;;
+            1) # Cancel button
+                clear
+                return 1
+                ;;
+            3) # Extra button (Fetch)
+                clear
+                return 2
+                ;;
+        esac
     done
 }
 
@@ -168,7 +175,7 @@ while true; do
         else
             lxc image list ubuntu: --format csv | grep -i "$instance_type" > /tmp/lxc_images.csv
         fi
-        # повторное вызов
+        # повторный вызов
     else
         print_error "Image selection cancelled"
     fi
@@ -176,12 +183,32 @@ done
 
 log "Selected image alias: $os_alias"
 
-# Ввод данных
+# Ввод данных (ИСПРАВЛЕНО: добавлены проверки на Cancel и пустые значения)
 container_name=$(dialog --inputbox "Instance name:" 8 40 2>&1 >/dev/tty)
+ret=$?
+clear
+[[ $ret -ne 0 ]] && print_error "Instance name input cancelled"
 container_name=$(echo "$container_name" | tr -cd 'a-zA-Z0-9-')
-disk_size=$(dialog --inputbox "Disk size (GB):" 8 40 10 2>&1 >/dev/tty); validate_number "$disk_size"
-ram=$(dialog --inputbox "RAM (GB):" 8 40 2>&1 >/dev/tty); validate_number "$ram"; ram_mb=$((ram*1024))
-cpu=$(dialog --inputbox "CPU cores:" 8 40 2>&1 >/dev/tty); validate_number "$cpu"
+[[ -z "$container_name" ]] && print_error "Instance name cannot be empty"
+
+disk_size=$(dialog --inputbox "Disk size (GB):" 8 40 10 2>&1 >/dev/tty)
+ret=$?
+clear
+[[ $ret -ne 0 ]] && print_error "Disk size input cancelled"
+validate_number "$disk_size"
+
+ram=$(dialog --inputbox "RAM (GB):" 8 40 2 2>&1 >/dev/tty)
+ret=$?
+clear
+[[ $ret -ne 0 ]] && print_error "RAM input cancelled"
+validate_number "$ram"
+ram_mb=$((ram*1024))
+
+cpu=$(dialog --inputbox "CPU cores:" 8 40 2 2>&1 >/dev/tty)
+ret=$?
+clear
+[[ $ret -ne 0 ]] && print_error "CPU input cancelled"
+validate_number "$cpu"
 
 # Планирование snapshot'ов
 snapshot_plan=$(dialog --menu "Are snapshots planned?" 12 50 5 \
@@ -190,7 +217,9 @@ snapshot_plan=$(dialog --menu "Are snapshots planned?" 12 50 5 \
     3 "+100%" \
     4 "+150%" \
     5 "+200%" 2>&1 >/dev/tty)
+ret=$?
 clear
+[[ $ret -ne 0 ]] && print_error "Snapshot plan selection cancelled"
 
 case $snapshot_plan in
     1) multiplier=1.0 ;;
@@ -203,14 +232,22 @@ esac
 
 disk_size_final=$(awk "BEGIN {printf \"%d\", $disk_size * $multiplier}")
 
+# ИСПРАВЛЕНО: определение переменной image_path
+image_path="/var/lib/lxc-images/${container_name}.img"
+mkdir -p /var/lib/lxc-images
+
+log "Image path: $image_path"
+log "Disk size final: ${disk_size_final}G"
+
 # Создание образа
 print_step "Creating disk image"
-truncate -s "${disk_size_final}G" "$image_path"
-mkfs.btrfs -f "$image_path"
+truncate -s "${disk_size_final}G" "$image_path" || print_error "Failed to create disk image"
+mkfs.btrfs -f "$image_path" || print_error "Failed to create btrfs filesystem"
 
 # Монтируем
 mount_point="/mnt/lxc-pools/${container_name}"
 mkdir -p "$mount_point"
+
 # добавим флаг
 print_step "Adding mount to /etc/fstab"
 fstab_entry="$(realpath "${image_path}") ${mount_point} btrfs loop,discard,compress=zstd 0 0"
@@ -220,51 +257,61 @@ mount -a || print_error "Mounting via fstab failed"
 # Создаем lxc storage
 storage_pool="${container_name}-pool"
 print_step "Creating storage pool"
-lxc storage create "$storage_pool" btrfs source="$mount_point"
+lxc storage create "$storage_pool" btrfs source="$mount_point" || print_error "Failed to create storage pool"
 
 # Создаем и запускаем контейнер/виртуальную машину
 print_step "Launching instance"
-lxc init "${repo}${os_alias}" "$container_name" $vm_flag --storage="$storage_pool" --config limits.memory="${ram_mb}MB" --config limits.cpu="$cpu"
+lxc init "${repo}${os_alias}" "$container_name" $vm_flag --storage="$storage_pool" --config limits.memory="${ram_mb}MB" --config limits.cpu="$cpu" || print_error "Failed to initialize instance"
+
 print_step "Starting instance"
-lxc start "$container_name"
+lxc start "$container_name" || print_error "Failed to start instance"
 
 # Расширяем диск внутри VM
 if [ "$instance_type" == "virtual-machine" ]; then
     print_step "Expanding VM disk"
     sleep 30
+    
     # расширение уровня LXD
-    lxc config device set "$container_name" root size="${disk_size}GiB"
+    lxc config device set "$container_name" root size="${disk_size_final}GiB" || print_error "Failed to resize disk at LXD level"
+    
     # перезагружать VM
     print_step "Restarting VM to apply disk changes"
-    lxc restart "$container_name"
+    lxc restart "$container_name" || print_error "Failed to restart VM"
     sleep 30
+    
     # расширение внутри VM
     print_step "Resizing partition & filesystem inside VM"
     lxc exec "$container_name" -- bash -c '
         set -e
-        growpart /dev/sda 1
+        growpart /dev/sda 1 || true
         if [ -f /etc/redhat-release ]; then
             xfs_growfs /
         else
-            resize2fs /dev/sda1
+            resize2fs /dev/sda1 || true
         fi
         df -h /
-    '
+    ' || print_error "Failed to resize filesystem inside VM"
 fi
 
 echo -e "${GREEN}[Success]${NC} Instance '$container_name' created:"
 echo "- OS: $os_alias"
 echo "- Type: ${instance_type^}"
-echo "- Disk: ${disk_size}G"
+echo "- Disk: ${disk_size_final}G"
 echo "- RAM: ${ram}GB"
 echo "- CPU: ${cpu} cores"
+echo "- Image path: $image_path"
 
 log "Instance '$container_name' created successfully"
 log "Collecting additional logs..."
 {
-lxc info "$container_name"
-lxc config show "$container_name"
-lxc storage info "$storage_pool"
+    echo "=== Instance Info ==="
+    lxc info "$container_name"
+    echo ""
+    echo "=== Instance Config ==="
+    lxc config show "$container_name"
+    echo ""
+    echo "=== Storage Pool Info ==="
+    lxc storage info "$storage_pool"
 } >> install.log
 
 log "Script completed successfully"
