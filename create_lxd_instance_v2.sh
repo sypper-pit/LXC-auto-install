@@ -84,11 +84,11 @@ print_step "Checking required commands"
 command -v lxc >/dev/null || print_error "LXD is not installed. Install it with: apt-get install lxd"
 command -v dialog >/dev/null || { 
     print_info "Installing dialog..."
-    apt-get update && apt-get install -y dialog
+    apt-get update && apt-get install -y dialog >/dev/null 2>&1
 }
 command -v jq >/dev/null || { 
     print_info "Installing jq..."
-    apt-get update && apt-get install -y jq
+    apt-get update && apt-get install -y jq >/dev/null 2>&1
 }
 log "All required commands are available"
 
@@ -134,18 +134,44 @@ vm_flag=""
 
 log "Selected instance type: $instance_type"
 
-# ИСПРАВЛЕНО: Получение списка локальных образов с правильным спиннером
+# ИСПРАВЛЕНО: Получение списка локальных образов с правильным парсингом JSON
 print_step "Checking for local images..."
 start_spinner "Loading local images"
 
-images_data=$(timeout $TIMEOUT lxc image list --format csv 2>&1 || echo "")
+# Получаем список образов в JSON формате
+images_json=$(timeout $TIMEOUT lxc image list --format json 2>&1 || echo "[]")
 
 stop_spinner
 
 log "Raw images data received"
 
 local_images=()
-mapfile -t local_images < <(echo "$images_data" | grep ",${instance_type}," || echo "")
+declare -a image_fps
+declare -a image_descs
+declare -a image_types
+declare -a image_archs
+
+# ИСПРАВЛЕНО: Правильный парсинг JSON - обрабатываем null значения
+while IFS='|' read -r fingerprint description type arch; do
+    if [ -n "$fingerprint" ]; then
+        local_images+=("$fingerprint")
+        idx=$((${#local_images[@]} - 1))
+        image_fps[$idx]="$fingerprint"
+        # ИСПРАВЛЕНО: Если description null или пуст, используем type и arch
+        if [ "$description" = "null" ] || [ -z "$description" ]; then
+            image_descs[$idx]="$type $arch"
+        else
+            image_descs[$idx]="$description"
+        fi
+        image_types[$idx]="$type"
+        image_archs[$idx]="$arch"
+        log "Found local image: ${fingerprint:0:12}... ($type)"
+    fi
+done < <(
+    echo "$images_json" | jq -r '.[] | 
+        select(.type == "'$instance_type'") | 
+        "\(.fingerprint)|\(.description // "")|\(.type)|\(.architecture)"' 2>/dev/null || echo ""
+)
 
 if [ ${#local_images[@]} -gt 0 ]; then
     # Есть локальные образы - показываем меню выбора
@@ -155,14 +181,23 @@ if [ ${#local_images[@]} -gt 0 ]; then
     menu_options+=("download" "Download new image from repository")
     
     for i in "${!local_images[@]}"; do
-        # ИСПРАВЛЕНО: Правильное получение полей из CSV
-        fingerprint=$(echo "${local_images[$i]}" | awk -F',' '{print $2}')
-        description=$(echo "${local_images[$i]}" | awk -F',' '{print $4}')
-        size=$(echo "${local_images[$i]}" | awk -F',' '{print $3}')
-        menu_options+=("$fingerprint" "$description (Size: $size)")
+        fp="${local_images[$i]}"
+        desc="${image_descs[$i]}"
+        type_str="${image_types[$i]}"
+        arch="${image_archs[$i]}"
+        
+        # Сокращаем fingerprint для удобства
+        fp_short="${fp:0:12}"
+        
+        # Сокращаем описание, если оно слишком длинное
+        if [ ${#desc} -gt 50 ]; then
+            desc="${desc:0:50}..."
+        fi
+        
+        menu_options+=("$fp" "[$type_str] ${fp_short}... - $desc")
     done
     
-    os_choice=$(dialog --menu "Select OS image:" 25 100 15 "${menu_options[@]}" 2>&1 >/dev/tty)
+    os_choice=$(dialog --menu "Select OS image:" 25 120 15 "${menu_options[@]}" 2>&1 >/dev/tty)
     ret=$?
     clear
     
@@ -175,15 +210,7 @@ if [ ${#local_images[@]} -gt 0 ]; then
         need_download=1
     else
         # Пользователь выбрал локальный образ
-        # Получаем алиас из выбранного образа
-        selected_image=$(echo "${local_images[@]}" | grep "$os_choice")
-        os_alias=$(echo "$selected_image" | awk -F',' '{print $2}')
-        
-        # Если алиаса нет, используем fingerprint
-        if [ -z "$os_alias" ] || [ "$os_alias" == "-" ]; then
-            os_alias="$os_choice"
-        fi
-        
+        os_alias="$os_choice"
         image_source="local"
         log "Selected local image: $os_alias"
     fi
@@ -198,17 +225,43 @@ if [ "${need_download:-0}" -eq 1 ]; then
     print_step "Fetching images from repository..."
     start_spinner "Downloading image list"
     
+    # ИСПРАВЛЕНО: Загружаем JSON и фильтруем по типу
     if [ "$repo" == "images:" ]; then
-        remote_data=$(timeout 60 lxc image list images: type="$instance_type" --format csv 2>&1 || echo "")
+        remote_json=$(timeout 60 lxc image list images: --format json 2>&1 || echo "[]")
     else
-        remote_data=$(timeout 60 lxc image list ubuntu: --format csv 2>&1 | grep -i "$instance_type" || echo "")
+        remote_json=$(timeout 60 lxc image list ubuntu: --format json 2>&1 || echo "[]")
     fi
     
     stop_spinner
     log "Remote images data received"
     
     remote_images=()
-    mapfile -t remote_images < <(echo "$remote_data")
+    declare -a remote_fps
+    declare -a remote_descs
+    declare -a remote_types
+    declare -a remote_archs
+    
+    # ИСПРАВЛЕНО: Правильный парсинг JSON
+    while IFS='|' read -r fingerprint description type arch; do
+        if [ -n "$fingerprint" ]; then
+            remote_images+=("$fingerprint")
+            idx=$((${#remote_images[@]} - 1))
+            remote_fps[$idx]="$fingerprint"
+            # ИСПРАВЛЕНО: Если description null или пуст, используем type и arch
+            if [ "$description" = "null" ] || [ -z "$description" ]; then
+                remote_descs[$idx]="$type $arch"
+            else
+                remote_descs[$idx]="$description"
+            fi
+            remote_types[$idx]="$type"
+            remote_archs[$idx]="$arch"
+            log "Found remote image: ${fingerprint:0:12}... ($type)"
+        fi
+    done < <(
+        echo "$remote_json" | jq -r '.[] | 
+            select(.type == "'$instance_type'") | 
+            "\(.fingerprint)|\(.description // "")|\(.type)|\(.architecture)"' 2>/dev/null || echo ""
+    )
     
     if [ ${#remote_images[@]} -eq 0 ]; then
         print_error "No images found in repository for type: $instance_type"
@@ -218,13 +271,23 @@ if [ "${need_download:-0}" -eq 1 ]; then
     
     menu_options=()
     for i in "${!remote_images[@]}"; do
-        fingerprint=$(echo "${remote_images[$i]}" | awk -F',' '{print $2}')
-        description=$(echo "${remote_images[$i]}" | awk -F',' '{print $4}')
-        size=$(echo "${remote_images[$i]}" | awk -F',' '{print $3}')
-        menu_options+=("$fingerprint" "$description (Size: $size)")
+        fp="${remote_images[$i]}"
+        desc="${remote_descs[$i]}"
+        type_str="${remote_types[$i]}"
+        arch="${remote_archs[$i]}"
+        
+        # Сокращаем fingerprint для удобства
+        fp_short="${fp:0:12}"
+        
+        # Сокращаем описание, если оно слишком длинное
+        if [ ${#desc} -gt 50 ]; then
+            desc="${desc:0:50}..."
+        fi
+        
+        menu_options+=("$fp" "[$type_str] ${fp_short}... - $desc")
     done
     
-    os_choice=$(dialog --menu "Select image to download:" 25 100 15 "${menu_options[@]}" 2>&1 >/dev/tty)
+    os_choice=$(dialog --menu "Select image to download:" 25 120 15 "${menu_options[@]}" 2>&1 >/dev/tty)
     ret=$?
     clear
     
@@ -232,16 +295,12 @@ if [ "${need_download:-0}" -eq 1 ]; then
         print_error "Selection cancelled"
     fi
     
-    os_alias=$(echo "${remote_images[@]}" | grep "$os_choice" | awk -F',' '{print $2}')
-    if [ -z "$os_alias" ] || [ "$os_alias" == "-" ]; then
-        os_alias="$os_choice"
-    fi
-    
+    os_alias="$os_choice"
     image_source="remote"
     
     # Загружаем образ
-    print_step "Downloading image '$os_alias'..."
-    start_spinner "Downloading ${os_alias}"
+    print_step "Downloading image (fingerprint: ${os_alias:0:12})..."
+    start_spinner "Downloading image"
     
     if timeout 300 lxc image copy "${repo}${os_alias}" local: --auto-update >/dev/null 2>&1; then
         stop_spinner
@@ -368,20 +427,35 @@ fi
 
 stop_spinner
 
-# ИСПРАВЛЕНО: Применяем размер диска ДО создания контейнера
-# Для контейнеров используем размер диска напрямую
-# Для VM нужно установить через конфиг
-
+# ИСПРАВЛЕНО: Правильный синтаксис для lxc init
 print_step "Launching instance"
 start_spinner "Initializing ${instance_type^}"
 
-if ! timeout 60 lxc init "${repo}${os_alias}" "$container_name" $vm_flag \
-    --storage="$storage_pool" \
-    --config limits.memory="${ram_mb}MB" \
-    --config limits.cpu="$cpu" \
-    --device root size="${disk_size}GB" 2>&1 >/dev/null; then
+# ИСПРАВЛЕНО: Правильный синтаксис команды lxc init
+# Использует fingerprint напрямую или полный путь с репозиторием
+init_cmd="lxc init $os_alias $container_name"
+if [ -n "$vm_flag" ]; then
+    init_cmd="$init_cmd $vm_flag"
+fi
+init_cmd="$init_cmd --storage=$storage_pool"
+init_cmd="$init_cmd --config limits.memory=${ram_mb}MB"
+init_cmd="$init_cmd --config limits.cpu=$cpu"
+init_cmd="$init_cmd --device root size=${disk_size}GB"
+
+log "Executing: $init_cmd"
+
+if ! timeout 60 bash -c "$init_cmd" 2>&1 >/dev/null; then
     stop_spinner
-    print_error "Failed to initialize instance"
+    # Попробуем альтернативный синтаксис с полным путем
+    print_warning "First init failed, trying alternative syntax..."
+    if ! timeout 60 lxc init "local:$os_alias" "$container_name" $vm_flag \
+        --storage="$storage_pool" \
+        --config limits.memory="${ram_mb}MB" \
+        --config limits.cpu="$cpu" \
+        --device root size="${disk_size}GB" 2>&1 >/dev/null; then
+        stop_spinner
+        print_error "Failed to initialize instance"
+    fi
 fi
 
 stop_spinner
@@ -455,15 +529,16 @@ echo ""
 echo -e "${GREEN}✓ Success!${NC} Instance '${GREEN}${container_name}${NC}' created successfully!"
 echo ""
 echo "Instance Details:"
-echo "  OS Image:     $os_alias"
-echo "  Type:         ${instance_type^}"
-echo "  Disk Size:    ${disk_size}G (applied to instance)"
-echo "  IMG File:     ${disk_size_final}G (with ${multiplier}x buffer)"
-echo "  RAM:          ${ram}GB (${ram_mb}MB)"
-echo "  CPU Cores:    ${cpu}"
-echo "  Image Path:   $image_path"
-echo "  Mount Point:  $mount_point"
-echo "  Storage Pool: $storage_pool"
+echo "  OS Image:      $os_alias"
+echo "  Image Source:  $image_source"
+echo "  Type:          ${instance_type^}"
+echo "  Disk Size:     ${disk_size}G (applied to instance)"
+echo "  IMG File:      ${disk_size_final}G (with ${multiplier}x buffer)"
+echo "  RAM:           ${ram}GB (${ram_mb}MB)"
+echo "  CPU Cores:     ${cpu}"
+echo "  Image Path:    $image_path"
+echo "  Mount Point:   $mount_point"
+echo "  Storage Pool:  $storage_pool"
 echo ""
 
 log "Instance '$container_name' created successfully"
